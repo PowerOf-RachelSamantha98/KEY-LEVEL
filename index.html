@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>XAU/USD Advanced Analyzer & Chart Dashboard</title>
-    <!-- Memuat PapaParse untuk baca CSV & Chart.js untuk menggambar Grafik secara Lokal -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -82,6 +81,15 @@
             margin-top: 10px;
             color: #38bdf8;
             font-size: 14px;
+        }
+        .error-message {
+            display: none;
+            background: #ef4444;
+            color: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 600;
         }
         .result-section {
             display: none;
@@ -189,6 +197,8 @@
         <h1>XAU/USD SMART ANALYZER PLATFORM</h1>
         <div class="subtitle">Analisis Struktur Pasar Hari Ini & Pemetaan Otomatis Level Esok Hari</div>
         
+        <div id="errorBox" class="error-message"></div>
+
         <div class="upload-section">
             <label class="custom-file-upload">
                 <input type="file" id="csvFileInput" accept=".csv" onchange="displayFileName()">
@@ -277,7 +287,9 @@
             const fileInput = document.getElementById('csvFileInput');
             const fileNameDisplay = document.getElementById('fileNameDisplay');
             const analyzeBtn = document.getElementById('analyzeBtn');
+            const errorBox = document.getElementById('errorBox');
             
+            errorBox.style.display = 'none';
             if (fileInput.files.length > 0) {
                 fileNameDisplay.textContent = "File terpilih: " + fileInput.files[0].name;
                 analyzeBtn.disabled = false;
@@ -286,16 +298,33 @@
 
         function analyzeData() {
             const fileInput = document.getElementById('csvFileInput');
+            const errorBox = document.getElementById('errorBox');
             if (fileInput.files.length === 0) return;
+
+            errorBox.style.display = 'none';
 
             Papa.parse(fileInput.files[0], {
                 header: true,
                 dynamicTyping: true,
                 skipEmptyLines: true,
                 complete: function(results) {
+                    if(results.data.length === 0) {
+                        showError("File CSV kosong atau tidak terbaca.");
+                        return;
+                    }
                     processDataAndRender(results.data);
+                },
+                error: function(err) {
+                    showError("Gagal membaca file CSV: " + err.message);
                 }
             });
+        }
+
+        function showError(msg) {
+            const errorBox = document.getElementById('errorBox');
+            errorBox.textContent = msg;
+            errorBox.style.display = 'block';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
         function processDataAndRender(data) {
@@ -307,30 +336,48 @@
             let openPrice = null;
             let volumeMap = {};
 
+            // Deteksi nama kolom secara dinamis (mengatasi huruf besar/kecil)
+            let sampleRow = data[0];
+            let colHigh = ['High', 'high', 'HIGH'].find(c => c in sampleRow) || null;
+            let colLow = ['Low', 'low', 'LOW'].find(c => c in sampleRow) || null;
+            let colClose = ['Close', 'close', 'CLOSE'].find(c => c in sampleRow) || null;
+            let colOpen = ['Open', 'open', 'OPEN'].find(c => c in sampleRow) || null;
+            let colTime = ['Etc/UTC', 'time', 'Time', 'TIME', 'date', 'Date'].find(c => c in sampleRow) || null;
+            let colVolume = ['Volume', 'volume', 'VOLUME', 'vol', 'Vol'].find(c => c in sampleRow) || null;
+
+            if (!colHigh || !colLow || !colClose) {
+                showError("Gagal mendeteksi kolom utama (High, Low, atau Close) di file CSV Anda. Pastikan nama kolom sudah benar.");
+                return;
+            }
+
             // Parsing data baris per baris
             for (let i = 0; i < data.length; i++) {
                 let row = data[i];
-                let high = row['High'] || row['high'];
-                let low = row['Low'] || row['low'];
-                let close = row['Close'] || row['close'];
-                let open = row['Open'] || row['open'];
-                let time = row['Etc/UTC'] || row['time'] || i;
-                let volume = row['Volume'] || row['volume'] || 0;
+                let high = row[colHigh];
+                let low = row[colLow];
+                let close = row[colClose];
+                let open = colOpen ? row[colOpen] : close;
+                let time = colTime ? row[colTime] : i;
+                let volume = colVolume ? row[colVolume] : 0;
 
-                if (close === undefined || high === undefined || low === undefined) continue;
+                if (close === undefined || high === undefined || low === undefined || close === null) continue;
 
-                if (i === 0) openPrice = open;
+                if (openPrice === null) openPrice = open;
                 if (high > maxHigh) maxHigh = high;
                 if (low < minLow) minLow = low;
                 lastClose = close;
 
                 prices.push(close);
-                // Potong format waktu agar tidak terlalu panjang di grafik
-                times.push(time.toString().includes('T') ? time.toString().split('T')[1].substring(0, 5) : time);
+                times.push(time.toString().includes('T') ? time.toString().split('T')[1].substring(0, 5) : time.toString().substring(0, 10));
 
                 // Hitung Volume POC
                 let priceBin = (Math.round(close * 2) / 2).toFixed(2);
                 volumeMap[priceBin] = (volumeMap[priceBin] || 0) + volume;
+            }
+
+            if (prices.length === 0) {
+                showError("Tidak ada baris data valid yang bisa diproses.");
+                return;
             }
 
             let pocPrice = null;
@@ -341,6 +388,7 @@
                     pocPrice = parseFloat(price);
                 }
             }
+            if (pocPrice === null) pocPrice = (maxHigh + minLow) / 2;
 
             // Hitung Level Matematika Esok Hari
             let range = maxHigh - minLow;
@@ -361,8 +409,8 @@
             document.getElementById('txtR3').textContent = r3.toFixed(2);
             document.getElementById('txtS4').textContent = s4.toFixed(2);
 
-            // 2. LOGIKA KECERDASAN ULASAN PASAR (KILAS BALIK HARI INI)
-            let netChange = lastClose - openPrice;
+            // LOGIKA KECERDASAN ULASAN PASAR (KILAS BALIK HARI INI)
+            let netChange = lastClose - (openPrice || prices[0]);
             let trendType = netChange > 0 ? "BULLISH (Menguat)" : "BEARISH (Melemah)";
             let volatilityStrength = range > 80 ? "SANGAT TINGGI (Trending/Ekstrem)" : "NORMAL/RENDAH (Sideways)";
             
@@ -373,14 +421,13 @@
             `;
             document.getElementById('marketReviewText').innerHTML = reviewHTML;
 
-            // 3. GENERATE INTERAKTIF SIMULASI CHART BERSERTA AREA PENTING
+            // GENERATE INTERAKTIF SIMULASI CHART BERSERTA AREA PENTING
             if (myChart) {
-                myChart.destroy(); // Hapus chart lama jika ada upload ulang
+                myChart.destroy();
             }
 
             const ctx = document.getElementById('marketChart').getContext('2d');
             
-            // Buat baris garis horizontal lurus sepanjang jumlah data menit
             const linePDH = Array(prices.length).fill(maxHigh);
             const linePDL = Array(prices.length).fill(minLow);
             const linePOC = Array(prices.length).fill(pocPrice);
@@ -450,7 +497,9 @@
 
             // Tampilkan section hasil analisis
             document.getElementById('resultSection').style.display = 'block';
-            document.getElementById('resultSection').scrollIntoView({ behavior: 'smooth' });
+            setTimeout(() => {
+                document.getElementById('resultSection').scrollIntoView({ behavior: 'smooth' });
+            }, 100);
         }
     </script>
 </body>
